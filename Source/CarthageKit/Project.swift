@@ -98,8 +98,11 @@ public final class Project { // swiftlint:disable:this type_body_length
 		return directoryURL.appendingPathComponent(Constants.Project.resolvedCartfilePath, isDirectory: false)
 	}
 
-	/// Whether to prefer HTTPS for cloning (vs. SSH).
-	public var preferHTTPS = true
+    /// Whether to allow HTTP for downloading dependencies
+    public var allowHTTP = false
+    
+	/// Whether to use ssh for cloning, or just use HTTPS
+	public var useSSH = false
 
 	/// Whether to use submodules for dependencies, or just check out their
 	/// working directories.
@@ -110,7 +113,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 	public let projectEvents: Signal<ProjectEvent, NoError>
 	private let _projectEventsObserver: Signal<ProjectEvent, NoError>.Observer
 
-	public init(directoryURL: URL) {
+    public init(directoryURL: URL) {
 		precondition(directoryURL.isFileURL)
 
 		let (signal, observer) = Signal<ProjectEvent, NoError>.pipe()
@@ -155,7 +158,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 			}
 		}
 
-		let cartfile = SignalProducer { Cartfile.from(file: cartfileURL) }
+        let cartfile = SignalProducer { Cartfile.from(file: cartfileURL, allowHTTP: self.allowHTTP) }
 			.flatMapError { error -> SignalProducer<Cartfile, CarthageError> in
 				if isNoSuchFileError(error) && FileManager.default.fileExists(atPath: privateCartfileURL.path) {
 					return SignalProducer(value: Cartfile())
@@ -164,7 +167,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 				return SignalProducer(error: error)
 			}
 
-		let privateCartfile = SignalProducer { Cartfile.from(file: privateCartfileURL) }
+        let privateCartfile = SignalProducer { Cartfile.from(file: privateCartfileURL, allowHTTP: self.allowHTTP) }
 			.flatMapError { error -> SignalProducer<Cartfile, CarthageError> in
 				if isNoSuchFileError(error) {
 					return SignalProducer(value: Cartfile())
@@ -196,9 +199,9 @@ public final class Project { // swiftlint:disable:this type_body_length
 	/// Reads the project's Cartfile.resolved.
 	public func loadResolvedCartfile() -> SignalProducer<ResolvedCartfile, CarthageError> {
 		return SignalProducer {
-			Result(attempt: { try String(contentsOf: self.resolvedCartfileURL, encoding: .utf8) })
+            Result(attempt: { (try String(contentsOf: self.resolvedCartfileURL, encoding: .utf8), self.allowHTTP) })
 				.mapError { .readFailed(self.resolvedCartfileURL, $0) }
-				.flatMap(ResolvedCartfile.from)
+                .flatMap(ResolvedCartfile.from(string:allowHTTP:))
 		}
 	}
 
@@ -219,7 +222,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 	/// Returns a signal which will send the URL to the repository's folder on
 	/// disk once cloning or fetching has completed.
 	private func cloneOrFetchDependency(_ dependency: Dependency, commitish: String? = nil) -> SignalProducer<URL, CarthageError> {
-		return cloneOrFetch(dependency: dependency, preferHTTPS: self.preferHTTPS, commitish: commitish)
+		return cloneOrFetch(dependency: dependency, useSSH: self.useSSH, commitish: commitish)
 			.on(value: { event, _ in
 				if let event = event {
 					self._projectEventsObserver.send(value: event)
@@ -241,7 +244,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 					return URLSession.shared.reactive.data(with: URLRequest(url: binary.url))
 						.mapError { CarthageError.readFailed(binary.url, $0 as NSError) }
 						.attemptMap { data, _ in
-							return BinaryProject.from(jsonData: data).mapError { error in
+							return BinaryProject.from(jsonData: data, allowHTTP: self.allowHTTP).mapError { error in
 								return CarthageError.invalidBinaryJSON(binary.url, error)
 							}
 						}
@@ -326,7 +329,8 @@ public final class Project { // swiftlint:disable:this type_body_length
 					return contentsOfFileInRepository(repositoryURL, Constants.Project.cartfilePath, revision: revision)
 				}
 				.flatMapError { _ in .empty }
-				.attemptMap(Cartfile.from(string:))
+                .map { ($0, self.allowHTTP) }
+                .attemptMap(Cartfile.from(string:allowHTTP:))
 
 			let cartfileSource: SignalProducer<Cartfile, CarthageError>
 			if tryCheckoutDirectory {
@@ -337,7 +341,7 @@ public final class Project { // swiftlint:disable:this type_body_length
 				}
 				.flatMap(.concat) { directoryExists -> SignalProducer<Cartfile, CarthageError> in
 					if directoryExists {
-						return SignalProducer(result: Cartfile.from(file: dependencyURL.appendingPathComponent(Constants.Project.cartfilePath)))
+                        return SignalProducer(result: Cartfile.from(file: dependencyURL.appendingPathComponent(Constants.Project.cartfilePath), allowHTTP: self.allowHTTP))
 							.flatMapError { _ in .empty }
 					} else {
 						return cartfileFetch
@@ -783,11 +787,11 @@ public final class Project { // swiftlint:disable:this type_body_length
 				let submodule: Submodule?
 
 				if var foundSubmodule = submodulesByPath[dependency.relativePath] {
-					foundSubmodule.url = dependency.gitURL(preferHTTPS: self.preferHTTPS)!
+					foundSubmodule.url = dependency.gitURL(useSSH: self.useSSH)!
 					foundSubmodule.sha = revision
 					submodule = foundSubmodule
 				} else if self.useSubmodules {
-					submodule = Submodule(name: dependency.relativePath, path: dependency.relativePath, url: dependency.gitURL(preferHTTPS: self.preferHTTPS)!, sha: revision)
+					submodule = Submodule(name: dependency.relativePath, path: dependency.relativePath, url: dependency.gitURL(useSSH: self.useSSH)!, sha: revision)
 				} else {
 					submodule = nil
 				}
@@ -1461,7 +1465,7 @@ internal func relativeLinkDestination(for dependency: Dependency, subdirectory: 
 /// when the operation completes.
 public func cloneOrFetch(
 	dependency: Dependency,
-	preferHTTPS: Bool,
+	useSSH: Bool,
 	destinationURL: URL = Constants.Dependency.repositoriesURL,
 	commitish: String? = nil
 ) -> SignalProducer<(ProjectEvent?, URL), CarthageError> {
@@ -1471,7 +1475,7 @@ public func cloneOrFetch(
 	return SignalProducer {
 			Result(at: destinationURL, attempt: {
 				try fileManager.createDirectory(at: $0, withIntermediateDirectories: true)
-				return dependency.gitURL(preferHTTPS: preferHTTPS)!
+				return dependency.gitURL(useSSH: useSSH)!
 			})
 		}
 		.flatMap(.merge) { (remoteURL: GitURL) -> SignalProducer<(ProjectEvent?, URL), CarthageError> in

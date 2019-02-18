@@ -94,12 +94,12 @@ extension Dependency: Comparable {
 }
 
 extension Dependency: Scannable {
-	/// Attempts to parse a Dependency.
-	public static func from(_ scanner: Scanner) -> Result<Dependency, ScannableError> {
-		return from(scanner, base: nil)
-	}
-
-	public static func from(_ scanner: Scanner, base: URL? = nil) -> Result<Dependency, ScannableError> {
+    /// Attempts to parse a Dependency.
+    public static func from(_ scanner: Scanner) -> Result<Dependency, ScannableError> {
+        return from(scanner, base: nil, allowHTTP: false)
+    }
+    /// Attempts to parse a Dependency and adds the option to allow http.
+    public static func from(_ scanner: Scanner, base: URL? = nil, allowHTTP: Bool = false) -> Result<Dependency, ScannableError> {
 		let parser: (String) -> Result<Dependency, ScannableError>
 
 		if scanner.scanString("github", into: nil) {
@@ -114,7 +114,7 @@ extension Dependency: Scannable {
 		} else if scanner.scanString("binary", into: nil) {
 			parser = { urlString in
 				if let url = URL(string: urlString) {
-					if url.scheme == "https" || url.scheme == "file" {
+					if url.validateScheme(allowHTTP: allowHTTP) {
 						return .success(self.binary(BinaryURL(url: url, resolvedDescription: url.description)))
 					} else if url.scheme == nil {
 						// This can use URL.init(fileURLWithPath:isDirectory:relativeTo:) once we can target 10.11+
@@ -123,7 +123,7 @@ extension Dependency: Scannable {
 							.standardizedFileURL
 						return .success(self.binary(BinaryURL(url: absoluteURL, resolvedDescription: url.absoluteString)))
 					} else {
-						return .failure(ScannableError(message: "non-https, non-file URL found for dependency type `binary`", currentLine: scanner.currentLine))
+						return .failure(ScannableError(message: "invalid URL scheme found for type `binary`, must be \(URL.validSchemesMessage)", currentLine: scanner.currentLine))
 					}
 				} else {
 					return .failure(ScannableError(message: "invalid URL found for dependency type `binary`", currentLine: scanner.currentLine))
@@ -175,13 +175,13 @@ extension Dependency: CustomStringConvertible {
 
 extension Dependency {
 	/// Returns the URL that the dependency's remote repository exists at.
-	func gitURL(preferHTTPS: Bool) -> GitURL? {
+	func gitURL(useSSH: Bool) -> GitURL? {
 		switch self {
 		case let .gitHub(server, repository):
-			if preferHTTPS {
-				return server.httpsURL(for: repository)
+			if useSSH {
+                return server.sshURL(for: repository)
 			} else {
-				return server.sshURL(for: repository)
+				return server.httpsURL(for: repository)
 			}
 
 		case let .git(url):
