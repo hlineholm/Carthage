@@ -114,7 +114,7 @@ extension Dependency: Scannable {
 		} else if scanner.scanString("binary", into: nil) {
 			parser = { urlString in
 				if let url = URL(string: urlString) {
-					if url.scheme == "https" || url.scheme == "file" {
+					if url.scheme == "https" || url.scheme == "file" || url.isWhitelistedForBinaryDownload {
 						return .success(self.binary(BinaryURL(url: url, resolvedDescription: url.description)))
 					} else if url.scheme == nil {
 						// This can use URL.init(fileURLWithPath:isDirectory:relativeTo:) once we can target 10.11+
