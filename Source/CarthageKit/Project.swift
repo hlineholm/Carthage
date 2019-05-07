@@ -929,7 +929,25 @@ public final class Project { // swiftlint:disable:this type_body_length
 		if FileManager.default.fileExists(atPath: fileURL.path) {
 			return SignalProducer(value: fileURL)
 		} else {
-			return URLSession.shared.reactive.download(with: URLRequest(url: url))
+            var request = URLRequest(url: url)
+            switch Netrc.from() {
+            case .success(let machines):
+                for machine in machines {
+                    if url.host == machine.name {
+                        let authString = machine.login + ":" + machine.password
+                        let authData = authString.data(using: .utf8)
+                        let authValue = "Basic \(authData!.base64EncodedString())"
+                        request.setValue(authValue, forHTTPHeaderField: "Authorization")
+                    } else {
+                        // Do not add a authorization header
+                        break
+                    }
+                }
+            case .failure(let error):
+                // Do not add a authorization header
+                break
+            }
+			return URLSession.shared.reactive.download(with: request)
 				.on(started: {
 					self._projectEventsObserver.send(value: .downloadingBinaries(dependency, version.description))
 				})
